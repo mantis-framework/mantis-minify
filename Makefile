@@ -23,7 +23,7 @@ mantis-minify.o: mantis-minify.cc mantis-minify.h
 
 ###
 
-mantis-minify.js:
+mantis-minify.js: mantis-minify.emscripten.cc mantis-minify.h
 	em++ -O3 -lnodefs.js mantis-minify.emscripten.cc -o mantis-minify.js
 
 ###

@@ -15,7 +15,7 @@
 
 #include "string.h"
 
-static constexpr char const* version = "v0.1";
+static constexpr char const* version = "v0.2";
 
 enum class comment_mode_t {
 	keep,
@@ -71,6 +71,28 @@ static constexpr bool is_inline_whitespace(
 	);
 }
 
+static constexpr bool is_open_brace(
+    char const& c
+) {
+	return (
+		c == '{'  ||
+		c == '('  ||
+		c == '['  /*||
+		c == '<'*/
+	);
+}
+
+static constexpr bool is_close_brace(
+    char const& c
+) {
+	return (
+		c == '}'  ||
+		c == ')'  ||
+		c == ']'  /*||
+		c == '>'*/
+	);
+}
+
 static constexpr bool is_quote_mark(
     char const& c
 ) {
@@ -120,18 +142,19 @@ static constexpr bool is_special_css_property_char(
 }
 
 static constexpr bool is_js_eol_char(
+	char const& p,
 	char const& c
 ) {
 	return !(
 		c == '{'  ||
-		c == '}'  ||
+		c == '['  ||
 		c == '('  ||
 		c == '<'  ||
 		c == '='  ||
-		c == '+'  ||
-		c == '-'  ||
-		c == '*'  ||
-		c == '/'  ||
+		(c == '+' && p != '+')  ||
+		(c == '-' && p != '-')  ||
+		(c == '*' && p != '/')  ||
+		(c == '/' && p != '/' && p != '*')  ||
 		c == '|'  ||
 		c == '&'  ||
 		c == '?'  ||
@@ -140,6 +163,18 @@ static constexpr bool is_js_eol_char(
 		c == ':'  ||
 		c == '%'  ||
 		c == '\\' 
+	);
+}
+
+static constexpr bool is_js_newline_char(
+	char const& c,
+	char const& n
+) {
+	return is_js_eol_char(n, c) && !(
+		c == '}' ||
+		c == ')' ||
+		c == ']' ||
+		c == '>'
 	);
 }
 
@@ -407,6 +442,45 @@ void skip_past_quote(
 	++pos_code;
 }
 
+void skip_past_varname(
+    minify::type::string const& code,
+    std::ptrdiff_t& pos_code
+) {
+	while(
+		++pos_code < code.size() && 
+		is_special_char(code[pos_code])
+	)
+		if(code[pos_code] == escape)
+			++pos_code;
+}
+
+void skip_past_pre_block(
+    minify::type::string const& code,
+    std::ptrdiff_t& pos_code
+) {
+	while(++pos_code < code.size() && (
+		code[pos_code-1] != '<' ||
+		code[pos_code]   != '/'
+	))
+		if(code[pos_code] == escape)
+			++pos_code;
+	++pos_code;
+}
+
+void skip_to_regex_end(
+    minify::type::string const& code,
+    std::ptrdiff_t& pos_code
+) {
+	skip_to_quote_end('/', code, pos_code);
+}
+
+void skip_past_regex(
+    minify::type::string const& code,
+    std::ptrdiff_t& pos_code
+) {
+	skip_past_quote('/', code, pos_code);
+}
+
 void cpy_between(
 	minify::type::string const& code,
 	std::ptrdiff_t const& pos_begin,
@@ -432,6 +506,69 @@ void cpy_quote(
 ) {
 	skip_past_quote(
 		quote_char,
+		code,
+		pos_code
+	);
+
+	cpy_between(
+		code,
+		pos_begin,
+		pos_code-1,
+		cpy,
+		cpy_pos
+	);
+}
+
+void cpy_varname(
+    minify::type::string const& code,
+    std::ptrdiff_t const& pos_begin,
+    std::ptrdiff_t& pos_code,
+    minify::type::string& cpy,
+    std::ptrdiff_t& cpy_pos
+) {
+	skip_past_varname(
+		code,
+		pos_code
+	);
+
+	cpy_between(
+		code,
+		pos_begin,
+		pos_code-1,
+		cpy,
+		cpy_pos
+	);
+}
+
+void cpy_regex(
+    minify::type::string const& code,
+    std::ptrdiff_t const& pos_begin,
+    std::ptrdiff_t& pos_code,
+    minify::type::string& cpy,
+    std::ptrdiff_t& cpy_pos
+) {
+	skip_past_regex(
+		code,
+		pos_code
+	);
+
+	cpy_between(
+		code,
+		pos_begin,
+		pos_code-1,
+		cpy,
+		cpy_pos
+	);
+}
+
+void cpy_pre_block(
+    minify::type::string const& code,
+    std::ptrdiff_t const& pos_begin,
+    std::ptrdiff_t& pos_code,
+    minify::type::string& cpy,
+    std::ptrdiff_t& cpy_pos
+) {
+	skip_past_pre_block(
 		code,
 		pos_code
 	);
@@ -675,6 +812,8 @@ void minify_css(
 	);
 }
 
+#include <vector>
+
 void minify_js(
 	minify::type::string const& js,
 	ptrdiff_t& pos_js,
@@ -684,11 +823,20 @@ void minify_js(
 	comment_mode_t const& comment_mode = comment_mode_t::strip,
 	bool const& minify_capacity = 0
 ) {
-	bool inside_comment = 0, treat_round_close_as_eol = 1;
-	char quote_type;
-	std::size_t comment_depth = 0, round_bracket_depth = 0;
-	std::ptrdiff_t pos_begin;
+	bool inside_comment = 0, 
+	     treat_round_close_as_eol = 1,
+	     was_semicolon;
+	char quote_type, 
+	     prev_non_whitespace_chr = ';', 
+	     prev_chr = ' ', 
+	     next_chr = ' ';
+	std::size_t comment_depth = 0, 
+	            round_bracket_depth = 0,
+	            bracket_depth = 0;
+	std::ptrdiff_t pos_begin,
+	               pos_prev_non_whitespace = -1;
 	minify::type::string cstr;
+	std::vector<std::size_t> is_eq_statement(1, std::size_t(0));
 
 	if(minified.capacity() <= js.length())
 		minified.strict_resize(js.length()+1);
@@ -702,9 +850,57 @@ void minify_js(
 	);
 
 	while(pos_js < js.size()) {
+		prev_chr = (pos_js) ? js[pos_js-1] : ' ';
+
+		if(pos_js && !is_whitespace(js[pos_js-1])) {
+			pos_prev_non_whitespace = pos_js-1;
+			prev_non_whitespace_chr = js[pos_js-1];
+		}
+
+		if(is_open_brace(js[pos_js])) {
+			++bracket_depth;
+
+			if(is_eq_statement.size() <= bracket_depth)
+				is_eq_statement.push_back(0);
+		}
+		else if(is_close_brace(js[pos_js]))
+			--bracket_depth;
+
+		if(
+			treat_round_close_as_eol &&
+			prev_chr != '=' && 
+			js[pos_js] == '=' &&
+			next_chr != '='
+		)
+			is_eq_statement[bracket_depth] = 1;
+
 		if(is_quote_mark(js[pos_js])) {
 			cpy_quote(
 				quote_type = js[pos_js],
+				js, 
+				pos_begin  = pos_js,
+				pos_js, 
+				minified, 
+				++pos_minified
+			);
+
+			if(
+				pos_js < js.size() &&
+				is_inline_whitespace(js[pos_js])
+			)
+				skip_past_inline_whitespace(
+					js, 
+					comment_depth,
+					++pos_js, 
+					comment_mode
+				);
+		}
+		else if(
+			pos_js+1 < js.size() && 
+			js[pos_js] == '/' && 
+			js[pos_js+1] == '^'
+		) {
+			cpy_regex(
 				js, 
 				pos_begin  = pos_js,
 				pos_js, 
@@ -731,7 +927,10 @@ void minify_js(
 				comment_mode
 			);
 
-			if(!is_special_char(js[pos_js]))
+			if(
+				!is_special_char(js[pos_js]) &&
+				!is_special_char(prev_non_whitespace_chr)
+			)
 				minified[++pos_minified] = space;
 		}
 		else if(
@@ -746,15 +945,15 @@ void minify_js(
 				comment_mode
 			);
 
-			if(!is_special_char(js[pos_js]))
+			if(pos_js < js.size() && !is_special_char(js[pos_js]))
 				minified[++pos_minified] = space;
 		}
-		else if(
-			js[pos_js] == semicolon || (
-				!inside_comment &&
-				js[pos_js] == newline
-			)
-		) {
+		else if(js[pos_js] == semicolon || (
+			!inside_comment &&
+			js[pos_js] == newline
+		)) {
+			was_semicolon = (js[pos_js] == semicolon);
+
 			skip_past_whitespace(
 				lang_t::js,
 				js, 
@@ -762,12 +961,30 @@ void minify_js(
 				++pos_js, 
 				comment_mode
 			);
+
+			prev_chr = (pos_prev_non_whitespace) ? js[pos_prev_non_whitespace-1] : ' ';
+			next_chr = (pos_js+1 < js.size()) ? js[pos_js+1] : ' ';
 			
-			if(
+			if((
+				was_semicolon && (
+					js[pos_js] != '}' ||             // needed for eg
+					prev_non_whitespace_chr == ')'   // {while(condition);}
+			)) || (
 				pos_js < js.size() &&
-				js[pos_js] != curly_close
-			)
-				minified[++pos_minified] = semicolon;
+				is_js_eol_char(prev_chr, prev_non_whitespace_chr) &&
+				is_js_newline_char(js[pos_js], next_chr)
+			)) {
+				if((
+					is_eq_statement[bracket_depth] || 
+					!is_close_brace(prev_non_whitespace_chr)
+				) || (
+					was_semicolon || (
+						!is_close_brace(js[pos_prev_non_whitespace]) && 
+						!is_close_brace(js[pos_js])
+				)))
+					minified[++pos_minified] = semicolon;
+			}
+			is_eq_statement[bracket_depth] = 0;
 		}
 		else if(
 			pos_js+3 < js.size()    &&
@@ -846,9 +1063,9 @@ void minify_js(
 			);
 		}
 		else if(
-			!is_js_eol_char(js[pos_js]) || (
+			!is_js_eol_char(prev_chr, js[pos_js]) || (
 				!treat_round_close_as_eol && 
-				js[pos_js] == ')'
+				(js[pos_js] == ')' || js[pos_js] == '(')
 			)
 		) {
 			if(js[pos_js] == angle_open) {
@@ -857,10 +1074,16 @@ void minify_js(
 					return; //break;
 			}
 			else if(
+				!treat_round_close_as_eol &&
 				js[pos_js] == ')' &&
 				!--round_bracket_depth
 			)
-					treat_round_close_as_eol = 1;
+				treat_round_close_as_eol = 1;
+			else if(
+				!treat_round_close_as_eol && 
+				js[pos_js] == '('
+			)
+				++round_bracket_depth;
 
 			minified[++pos_minified] = js[pos_js];
 
@@ -873,20 +1096,11 @@ void minify_js(
 			);
 		}
 		else if(
-			!treat_round_close_as_eol && 
-			js[pos_js] == '('
-		) {
-			++round_bracket_depth;
-			minified[++pos_minified] = '(';
-			++pos_js;
-		}
-		else if(
 			pos_js+1 < js.size() &&
 			js[pos_js]   == 'i'  && 
 			js[pos_js+1] == 'f'
 		) {
 			treat_round_close_as_eol = 0;
-			round_bracket_depth = 0;
 			minified[++pos_minified] = js[pos_js];
 			minified[++pos_minified] = js[++pos_js];
 			++pos_js;
@@ -897,8 +1111,7 @@ void minify_js(
 			js[pos_js+1] == 'o'  &&
 			js[pos_js+2] == 'r'
 		) {
-			treat_round_close_as_eol = 0;
-			round_bracket_depth = 0;
+			//treat_round_close_as_eol = 1;
 			minified[++pos_minified] = js[pos_js];
 			minified[++pos_minified] = js[++pos_js];
 			minified[++pos_minified] = js[++pos_js];
@@ -913,7 +1126,6 @@ void minify_js(
 			js[pos_js+4] == 'e'
 		) {
 			treat_round_close_as_eol = 0;
-			round_bracket_depth = 0;
 			minified[++pos_minified] = js[pos_js];
 			minified[++pos_minified] = js[++pos_js];
 			minified[++pos_minified] = js[++pos_js];
@@ -933,8 +1145,10 @@ void minify_js(
 			js[pos_js+7] == 'n'
 		) {
 			treat_round_close_as_eol = 0;
-			round_bracket_depth = 0;
 			minified[++pos_minified] = js[pos_js];
+			minified[++pos_minified] = js[++pos_js];
+			minified[++pos_minified] = js[++pos_js];
+			minified[++pos_minified] = js[++pos_js];
 			minified[++pos_minified] = js[++pos_js];
 			minified[++pos_minified] = js[++pos_js];
 			minified[++pos_minified] = js[++pos_js];
@@ -948,11 +1162,13 @@ void minify_js(
 			js[pos_js+2] == 's'  &&
 			js[pos_js+3] == 'e'
 		) {
+			//treat_round_close_as_eol = 0;
 			minified[++pos_minified] = js[pos_js];
 			minified[++pos_minified] = js[++pos_js];
 			minified[++pos_minified] = js[++pos_js];
 			minified[++pos_minified] = js[++pos_js];
-
+			minified[++pos_minified] = js[++pos_js];
+			
 			skip_past_whitespace(
 				lang_t::js,
 				js, 
@@ -960,15 +1176,6 @@ void minify_js(
 				++pos_js, 
 				comment_mode
 			);
-
-			if(pos_js < js.size()) {
-				if(js[pos_js] == '(') {
-					treat_round_close_as_eol = 0;
-					round_bracket_depth = 0;
-				}
-				else
-					minified[++pos_minified] = space;
-			}
 		}
 		else {
 			minified[++pos_minified] = js[pos_js];
@@ -1030,7 +1237,8 @@ void minify_html(
 	bool const& minify_capacity = 0
 ) {
 	bool between_close_and_open = 0,
-	     inside_tag = 0;
+	     inside_tag = 0,
+	     inside_pre = 0;
 	char quote_type;
 	std::size_t comment_depth = 0;
 	std::ptrdiff_t pos_begin;
@@ -1048,7 +1256,7 @@ void minify_html(
 	);
 
 	while(pos_html < html.size()) {
-		if(is_quote_mark(html[pos_html])) {
+		if(inside_tag && is_quote_mark(html[pos_html])) {
 			cpy_quote(
 				quote_type = html[pos_html],
 				html, 
@@ -1121,7 +1329,32 @@ void minify_html(
 			inside_tag = 0;
 			minified[++pos_minified] = angle_close;
 
-			if(
+			if(inside_pre) {
+				cpy_pre_block(
+					html, 
+					pos_begin = ++pos_html,
+					pos_html, 
+					minified, 
+					++pos_minified
+				);
+				inside_pre = 0;
+
+				/*while(
+					++pos_html < html.size()
+				) {
+					if(
+						pos_html+1 < html.size() &&
+						html[pos_html] == '<' && 
+						html[pos_html+1] == '/'
+					) {
+						inside_pre = 0;
+						break;
+					}
+					else
+						minified[++pos_minified] = html[pos_html];
+				}*/
+			}
+			else if(
 				++pos_html < html.size() &&
 				is_whitespace(html[pos_html])
 			) {
@@ -1185,7 +1418,74 @@ void minify_html(
 							comment_mode,
 							minify_capacity);
 				}
+				else if(
+					pos_html < html.size() &&
+					html[pos_html] == 'p'  &&
+					cstr.substr(html, pos_html+1, 2) == "re"
+				) {
+					inside_pre = 1;
+					cpy_between(
+						html, 
+						pos_html, 
+						pos_html+2, 
+						minified, 
+						++pos_minified
+					);
+					pos_html += 3;
+				}
+				else if(
+					pos_html < html.size() &&
+					html[pos_html] == 'c'  &&
+					cstr.substr(html, pos_html+1, 3) == "ode"
+				) {
+					inside_pre = 1;
+					cpy_between(
+						html, 
+						pos_html, 
+						pos_html+3, 
+						minified, 
+						++pos_minified
+					);
+					pos_html += 4;
+				}
+				else if(
+					pos_html < html.size() &&
+					html[pos_html] == 't'  &&
+					cstr.substr(html, pos_html+1, 7) == "extarea"
+				) {
+					inside_pre = 1;
+					cpy_between(
+						html, 
+						pos_html, 
+						pos_html+7, 
+						minified, 
+						++pos_minified
+					);
+					pos_html += 8;
+				}
 			}
+		}
+		else if(
+			inside_tag &&
+			pos_html+15 < html.size() &&
+			html[pos_html]   == 'c'   && 
+			html[pos_html+1] == 'o'   && 
+			html[pos_html+2] == 'n'   && 
+			html[pos_html+3] == 't'   && 
+			html[pos_html+4] == 'e'   && 
+			html[pos_html+5] == 'n'   && 
+			html[pos_html+6] == 't'   && 
+			cstr.substr(html, pos_html+7, 8) == "editable"
+		) {
+			inside_pre = 1;
+			cpy_between(
+				html, 
+				pos_html, 
+				pos_html+14, 
+				minified, 
+				++pos_minified
+			);
+			pos_html += 15;
 		}
 		else if(
 			inside_tag &&
@@ -1506,7 +1806,6 @@ enum class output_t {
 #include <atomic>
 #include <mutex>
 #include <thread>
-#include <vector>
 
 static bool minify_comments = 1;
 static comment_mode_t comment_mode = comment_mode_t::strip_all;

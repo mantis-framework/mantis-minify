@@ -232,6 +232,7 @@ int main(int argc_int, char ** argv)
 	for(std::size_t c=0; c<no_cores; ++c)
 		thrds[c].join();
 
+
 	if(output_type == output_t::terminal) {
 		for(std::size_t m=0; m<minified_vec.size(); ++m)
 			std::cout << minified_vec[m];
