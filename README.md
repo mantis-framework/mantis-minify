@@ -20,9 +20,9 @@ mantis-minify --html index.html
 
 JS/WASM Example Usage:
 ```
-node mantis-minify.js --output-file /pwd/bundled.min.css --css *.css
-node mantis-minify.js --js *.js > bundled.min.js
-node mantis-minify.js --html index.html
+node mantis-minify.js --output-path /pwd/bundled.min.css --css /pwd/*.css
+node mantis-minify.js --js /pwd/*.js > bundled.min.js
+node mantis-minify.js --html /pwd/index.html
 ```
 
 Note: To use `mantis-minify.js` you will also need `mantis-minify.wasm`.

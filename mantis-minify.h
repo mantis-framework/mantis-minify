@@ -442,18 +442,6 @@ void skip_past_quote(
 	++pos_code;
 }
 
-void skip_past_varname(
-    minify::type::string const& code,
-    std::ptrdiff_t& pos_code
-) {
-	while(
-		++pos_code < code.size() && 
-		is_special_char(code[pos_code])
-	)
-		if(code[pos_code] == escape)
-			++pos_code;
-}
-
 void skip_past_pre_block(
     minify::type::string const& code,
     std::ptrdiff_t& pos_code
@@ -506,27 +494,6 @@ void cpy_quote(
 ) {
 	skip_past_quote(
 		quote_char,
-		code,
-		pos_code
-	);
-
-	cpy_between(
-		code,
-		pos_begin,
-		pos_code-1,
-		cpy,
-		cpy_pos
-	);
-}
-
-void cpy_varname(
-    minify::type::string const& code,
-    std::ptrdiff_t const& pos_begin,
-    std::ptrdiff_t& pos_code,
-    minify::type::string& cpy,
-    std::ptrdiff_t& cpy_pos
-) {
-	skip_past_varname(
 		code,
 		pos_code
 	);
